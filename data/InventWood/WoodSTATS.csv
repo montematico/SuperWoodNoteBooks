@@ -1,0 +1,15 @@
+Operator,Specimen ID,Wood Type,Thickness(mm),Width(mm),Length(mm),Area(mm²),Modulus(MPa),Ultimate Stress(MPa),Ultimate Strain(m/m)
+Mika,22s,Superwood,49.7,5.67,19.9,112.550,4050,161,0.291
+Mika,23s,Superwood,51.3,5.68,19.5,110.988,,132,0.0900
+Mika,24s,Superwood,49.8,5.66,19.1,107.880,,117,0.0394
+Mika,25s,Superwood,49.9,5.67,19.5,110.565,,131,0.150
+Mika,26s,Superwood,49.4,5.66,18.9,106.918,,138,0.0514
+Mika,27s,Superwood,50.2,5.66,19.6,111.106,,122,0.109
+Mika,28s,Superwood,50.1,5.68,19.8,112.294,4720,129,0.0922
+Mika,29s,Superwood,49.4,5.66,19.0,107.710,5500,147,0.0725
+Mika,30s,Superwood,48.8,5.67,17.7,100.529,3720,129,0.0411
+Mika,31s,Superwood,48.9,5.68,20.0,113.316,,62.5,0.0321
+Mika,32s,Superwood,50.3,5.67,19.5,110.622,6840,126,0.0439
+Mika,33s,Superwood,49.4,5.66,19.5,110.484,6250,105,0.0174
+Mika,34s,Superwood,48.9,5.67,18.7,106.200,4420,130,0.0573
+Mika,35s,Superwood,49.0,5.66,20.1,113.823,4670,119,0.0427
