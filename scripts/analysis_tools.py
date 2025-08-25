@@ -1,193 +1,236 @@
 # analysis_tools.py
+"""
+Stress-strain analysis tools for wood materials.
+
+This module provides functions for analyzing stress-strain data from wood samples,
+including calculating Young's modulus, yield strength, and other mechanical properties.
+"""
+
+import ipywidgets as widgets
+from IPython.display import display, clear_output
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 from scipy import stats
 from scipy.integrate import trapezoid
-import pwlf  # pip install pwlf
+import pwlf
 
-# --- Data Analysis Functions ---
-def generate_report(csv_file, ax=None):
-    """
-    Loads a CSV, calculates material properties, and plots the stress-strain curve.
-    Uses strain as a unitless ratio throughout with dynamic Young's modulus calculation
-    that accounts for possible toe regions.
-    """
-    # --- Configuration ---
-    StrainCol = "Strain (m/m)"
-    StressCol = "Stress (Pa)"
-    OffsetStrain = 0.002
+# --- Configuration ---
+StrainCol = "Strain (m/m)"
+StressCol = "Stress (Pa)"
+OffsetStrain = 0.002
 
-    df = pd.read_csv(csv_file)
-    
-    # --- Dynamic Young's Modulus Calculation ---
-    # Use piecewise linear fit to find the elastic region automatically
-    x = df[StrainCol].values
-    y = df[StressCol].values
-    
-    # Filter out any initial zero or very low strain/stress points
-    valid_idx = y > np.max(y) * 0.01  # Filter points with stress > 1% of max
-    if np.sum(valid_idx) < len(y):  # Only filter if necessary
-        x = x[valid_idx]
-        y = y[valid_idx]
-    
-    # Try fitting with 3 segments to account for possible toe region
-    my_pwlf = pwlf.PiecewiseLinFit(x, y)
-    breaks_3 = my_pwlf.fit(3)  # 3 segments: toe region, elastic, plastic
-    slopes_3 = my_pwlf.slopes
-    
-    # Also try with 2 segments as backup
-    breaks_2 = my_pwlf.fit(2)
-    slopes_2 = my_pwlf.slopes
-    
-    # Determine which model to use based on segment characteristics
-    if len(breaks_3) >= 4 and slopes_3[1] > slopes_3[0]:
-        # If 3-segment model has increasing slope in second segment, likely has toe region
-        # Use the second segment (index 1) as the elastic region
-        youngs_modulus = slopes_3[1]
-        elastic_start = breaks_3[1]
-        elastic_limit = breaks_3[2]
-        model_used = "3-segment"
+def _analyze_stress_strain(df, ax=None, elastic_bounds_override=None):
+    """
+    Analyzes stress-strain data and calculates material properties.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame containing stress-strain data
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on. If None, no plotting is done.
+    elastic_bounds_override : tuple, optional
+        (start, end) of elastic region to override automatic detection
+
+    Returns:
+    --------
+    dict
+        Dictionary of calculated properties
+    """
+    x_full = df[StrainCol].values
+    y_full = df[StressCol].values
+
+    # --- Step 1: Determine Elastic Region ---
+    if elastic_bounds_override:
+        # User is providing the bounds manually via a slider
+        elastic_start, elastic_limit = elastic_bounds_override
+        model_used = "Manual Override"
     else:
-        # Otherwise use 2-segment model (simpler case)
-        youngs_modulus = slopes_2[0]  # First segment is elastic region
-        elastic_start = breaks_2[0]
-        elastic_limit = breaks_2[1]
-        model_used = "2-segment"
-    
-    # --- Fix 1: Properly position the elastic region line ---
-    # Get actual data points in the elastic region
+        # Automatic detection using pwlf (the original logic)
+        x_filt = x_full[y_full > np.max(y_full) * 0.01]
+        y_filt = y_full[y_full > np.max(y_full) * 0.01]
+
+        my_pwlf = pwlf.PiecewiseLinFit(x_filt, y_filt)
+        breaks_3 = my_pwlf.fit(3)
+        slopes_3 = my_pwlf.slopes
+        breaks_2 = my_pwlf.fit(2)
+        slopes_2 = my_pwlf.slopes
+
+        if len(breaks_3) >= 4 and slopes_3[1] > slopes_3[0]:
+            elastic_start, elastic_limit = breaks_3[1], breaks_3[2]
+            model_used = "3-segment"
+        else:
+            elastic_start, elastic_limit = breaks_2[0], breaks_2[1]
+            model_used = "2-segment"
+
+    # --- Step 2: Calculate Young's Modulus from the determined/provided region ---
     elastic_region_data = df[(df[StrainCol] >= elastic_start) & (df[StrainCol] <= elastic_limit)]
-    
+
+    # --- Quality Metrics ---
+    quality_metrics = {}
+
     if len(elastic_region_data) > 1:
-        # Recalculate slope and intercept directly from the data points
-        slope, intercept, _, _, _ = stats.linregress(
-            elastic_region_data[StrainCol], 
+        # Calculate Young's modulus and R² for the elastic region
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            elastic_region_data[StrainCol],
             elastic_region_data[StressCol]
         )
-        # Update Young's modulus with this more precise value
         youngs_modulus = slope
+        quality_metrics['R_squared'] = r_value**2
+
+        # Calculate ratio of elastic modulus to overall curve slope (should be > 1 for good fit)
+        overall_slope, _, _, _, _ = stats.linregress(x_full, y_full)
+        quality_metrics['Modulus_ratio'] = youngs_modulus / overall_slope if overall_slope != 0 else float('inf')
+
+        # Calculate consistency with expected material behavior
+        # 1. Elastic region should be in the beginning part of the curve
+        quality_metrics['Early_region_score'] = 1.0 - (elastic_start / max(x_full))
+
+        # 2. Points in the elastic region should have low deviation from the linear fit
+        predicted = youngs_modulus * elastic_region_data[StrainCol] + intercept
+        residuals = elastic_region_data[StressCol] - predicted
+        quality_metrics['Residual_score'] = 1.0 / (1.0 + np.std(residuals) / np.mean(elastic_region_data[StressCol]))
+
+        # 3. Region should have enough points for statistical significance
+        quality_metrics['Data_points'] = len(elastic_region_data)
+        quality_metrics['Data_coverage'] = len(elastic_region_data) / len(df)
+
+        # Composite quality score (weighted average of metrics)
+        quality_metrics['Overall_score'] = (
+            0.4 * quality_metrics['R_squared'] + 
+            0.2 * min(1.0, quality_metrics['Modulus_ratio'] / 2) +
+            0.2 * quality_metrics['Early_region_score'] + 
+            0.1 * quality_metrics['Residual_score'] +
+            0.1 * min(1.0, quality_metrics['Data_points'] / 20)
+        )
     else:
-        # Fallback if too few points in the elastic region
-        intercept = 0
-    
-    # Define the elastic region fit function using slope-intercept form
-    elastic_region_fit = lambda x: youngs_modulus * x + intercept
-    
-    # --- Rest of calculations ---
+        # Fallback if bounds are invalid
+        youngs_modulus, intercept = 0, 0
+        quality_metrics = {
+            'R_squared': 0, 'Modulus_ratio': 0, 'Early_region_score': 0,
+            'Residual_score': 0, 'Data_points': 0, 'Data_coverage': 0,
+            'Overall_score': 0
+        }
+
+    # --- Step 3: Calculate All Other Properties ---
+    # These calculations use the Young's modulus from the current elastic region fit
+    # (either automatic or manual override)
     ultimate_tensile_strength = df[StressCol].max()
     uts_index = df[StressCol].idxmax()
     strain_at_uts = df.loc[uts_index, StrainCol]
-    
-    # --- Fix 2: Properly calculate the 0.2% offset line ---
-    # Standard 0.2% offset method: shift the elastic line to the right by 0.002 strain
+
+    # Offset line and yield strength calculation
+    # Calculate the offset line using the current Young's modulus (from the elastic region fit)
+    # This ensures the offset line is always parallel to the elastic region fit
     offset_intercept = intercept - youngs_modulus * OffsetStrain
     df['Offset Stress'] = youngs_modulus * df[StrainCol] + offset_intercept
-    
-    # --- Fix 3: Better intersection calculation for yield point ---
-    yield_strength = np.nan
-    yield_strain = np.nan
-    intersection_index = -1
-    
+
+    yield_strength, yield_strain, intersection_index = np.nan, np.nan, -1
     try:
-        # Look for where stress curve crosses above offset line, after the toe region
-        min_strain = max(elastic_start, OffsetStrain * 2)  # Avoid very early data
-        search_df = df[df[StrainCol] > min_strain].copy()
-        
-        # Calculate difference between stress and offset line
+        # Start searching for the yield point from the elastic limit or the offset strain,
+        # whichever is greater. This ensures we find the yield point after the elastic region.
+        search_df = df[df[StrainCol] > max(elastic_limit, OffsetStrain)].copy()
         search_df['diff'] = search_df[StressCol] - search_df['Offset Stress']
-        
-        # Fixed approach: Manually find where the difference changes sign
-        search_df['diff_sign'] = np.sign(search_df['diff'])
-        search_df['sign_change'] = search_df['diff_sign'].diff() != 0
-        
-        # Find where diff goes from negative to positive (crosses zero)
-        cross_points = search_df[(search_df['sign_change']) & (search_df['diff'] >= 0)]
-        
+
+        # Look for where the actual stress curve crosses above the offset line
+        cross_points = search_df[search_df['diff'] > 0]
         if len(cross_points) > 0:
-            # Get first crossing point
             intersection_index = cross_points.index[0]
             yield_strength = df.loc[intersection_index, StressCol]
             yield_strain = df.loc[intersection_index, StrainCol]
-        else:
-            # If no sign change, find point where difference is closest to zero
-            closest_idx = search_df['diff'].abs().idxmin()
-            if closest_idx and search_df.loc[closest_idx, 'diff'] < youngs_modulus * 0.001:  # Reasonable tolerance
-                intersection_index = closest_idx
-                yield_strength = df.loc[intersection_index, StressCol]
-                yield_strain = df.loc[intersection_index, StrainCol]
     except (ValueError, IndexError):
-        print(f"Warning: 0.2% offset yield strength could not be determined for {csv_file}.")
+        pass # Fail silently if no yield point found
 
-    # --- Resilience and Toughness (Integration) ---
-    resilience = np.nan
-    if intersection_index != -1:
-        df_to_yield = df.loc[:intersection_index]
-        resilience = trapezoid(df_to_yield[StressCol], x=df_to_yield[StrainCol])
+    # Resilience and Toughness
+    resilience = trapezoid(df.loc[:intersection_index][StressCol], x=df.loc[:intersection_index][StrainCol]) if intersection_index != -1 else np.nan
+    toughness = trapezoid(df.loc[:uts_index][StressCol], x=df.loc[:uts_index][StrainCol])
 
-    df_to_uts = df.loc[:uts_index]
-    toughness = trapezoid(df_to_uts[StressCol], x=df_to_uts[StrainCol])
-
-    # --- Results Dictionary ---
     results = {
-        'Youngs Modulus (Pa)': youngs_modulus, 
-        'UTS (Pa)': ultimate_tensile_strength,
-        'Strain at UTS': strain_at_uts, 
-        'Yield Strength (Pa)': yield_strength,
-        'Yield Strain': yield_strain, 
-        'Elastic Limit Strain': elastic_limit,
-        'Model Type': model_used,
-        'Resilience (J/m^3)': resilience,
-        'Toughness to UTS (J/m^3)': toughness, 
-        'File': csv_file
+        'Youngs Modulus (Pa)': youngs_modulus, 'UTS (Pa)': ultimate_tensile_strength,
+        'Yield Strength (Pa)': yield_strength, 'Elastic Limit Strain': elastic_limit, 'Model Type': model_used,
+        'Resilience (J/m^3)': resilience, 'Toughness (J/m^3)': toughness,
+        # Quality metrics
+        'R_squared': quality_metrics['R_squared'],
+        'Modulus_ratio': quality_metrics['Modulus_ratio'],
+        'Early_region_score': quality_metrics['Early_region_score'],
+        'Residual_score': quality_metrics['Residual_score'],
+        'Data_points': quality_metrics['Data_points'],
+        'Data_coverage': quality_metrics['Data_coverage'],
+        'Overall_quality_score': quality_metrics['Overall_score']
     }
 
-    # --- Plotting ---
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.set_title(f'Stress-Strain Curve for {os.path.basename(csv_file)}')
+    # --- Step 4: Plotting ---
+    # Clear the axes on each update to prevent over-plotting
+    ax.clear()
 
-    label = f'{os.path.basename(csv_file)} (E = {youngs_modulus / 1e9:.2f} GPa)'
-    ax.plot(df[StrainCol], df[StressCol], label=label)
-    
-    # Plot elastic region fit
-    plot_strain_min = max(0, elastic_start - 0.001)  # Start slightly before elastic region
-    plot_strain_max = min(elastic_limit + 0.002, strain_at_uts)  # End slightly after
-    elastic_strains = np.linspace(plot_strain_min, plot_strain_max, 100)
-    elastic_stresses = [elastic_region_fit(s) for s in elastic_strains]
-    ax.plot(elastic_strains, elastic_stresses, 'g--', linewidth=1.5, 
-            label=f'Elastic Region ({model_used})')
-    
+    # Plot main curve
+    ax.plot(x_full, y_full, label=f'Data (E = {youngs_modulus / 1e9:.2f} GPa)')
+
+    # Plot linear fit line
+    elastic_strains = np.array([elastic_start, elastic_limit])
+    ax.plot(elastic_strains, youngs_modulus * elastic_strains + intercept, 'g--', lw=2,
+            label=f'Elastic Region Fit (E = {youngs_modulus/1e9:.2f} GPa, {model_used})')
+
+    # Plot vertical lines for bounds
+    ax.axvline(elastic_start, color='r', linestyle=':', lw=1.5, label=f'Lower Bound: {elastic_start:.4f}')
+    ax.axvline(elastic_limit, color='r', linestyle=':', lw=1.5, label=f'Upper Bound: {elastic_limit:.4f}')
+
+    # Plot offset line and yield point
     if not np.isnan(yield_strength):
-        # Plot offset line with proper positioning
-        offset_strains = np.linspace(OffsetStrain, yield_strain + 0.002, 100)
-        offset_stresses = [youngs_modulus * s + offset_intercept for s in offset_strains]
-        ax.plot(offset_strains, offset_stresses, 'r--', linewidth=1.5, label='0.2% Offset Line')
-        
-        # Add yield point marker
-        ax.scatter(yield_strain, yield_strength, color='red', s=50, zorder=5)
-        ax.annotate(f'Yield Point ({yield_strain:.4f}, {yield_strength/1e6:.1f} MPa)', 
-                    xy=(yield_strain, yield_strength), 
-                    xytext=(yield_strain + 0.005, yield_strength * 0.8))
-        
-        # Add offset strain marker
-        ax.scatter(OffsetStrain, 0, color='blue', s=30, zorder=5)
-        ax.annotate(f'0.2% Offset', xy=(OffsetStrain, 0), 
-                    xytext=(OffsetStrain, ultimate_tensile_strength*0.05),
-                    arrowprops=dict(facecolor='blue', shrink=0.05),
-                    horizontalalignment='center')
-    
+        # Use the current Young's modulus to ensure the offset line is parallel to the elastic region fit
+        # Start the offset line at the offset strain (0.2%) and extend it past the yield point
+        offset_strains = np.linspace(OffsetStrain, yield_strain * 1.1, 2)
+        ax.plot(offset_strains, youngs_modulus * offset_strains + offset_intercept, 'r--', lw=1.5, 
+                label=f'0.2% Offset (Parallel to E = {youngs_modulus/1e9:.2f} GPa)')
+        ax.scatter(yield_strain, yield_strength, color='red', s=50, zorder=5, 
+                  label=f'Yield: {yield_strength/1e6:.1f} MPa at ε = {yield_strain:.4f}')
+
     ax.set_xlabel('Strain (m/m)')
     ax.set_ylabel('Stress (Pa)')
-    ax.set_ylim(bottom=0)
     ax.grid(True)
-    ax.legend()
+    ax.legend(loc='best')
+
+    # Add quality metrics to the plot title
+    quality_text = f"Quality Score: {quality_metrics['Overall_score']:.2f}"
+    ax.set_title(f"Interactive Stress-Strain Analysis - {quality_text}")
+
+    # Add a text box with detailed quality metrics
+    textstr = '\n'.join((
+        f"Quality Metrics:",
+        f"R² = {quality_metrics['R_squared']:.3f}",
+        f"Modulus Ratio = {min(quality_metrics['Modulus_ratio'], 10):.2f}",
+        f"Early Region = {quality_metrics['Early_region_score']:.2f}",
+        f"Residual Score = {quality_metrics['Residual_score']:.2f}",
+        f"Data Points = {quality_metrics['Data_points']}",
+        f"Coverage = {quality_metrics['Data_coverage']:.2f}"
+    ))
+
+    # Position the text box in the upper right corner with a light background
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=9,
+            verticalalignment='top', bbox=props)
+
+    ax.set_ylim(bottom=0)
 
     return results
-# --- Format and Display Results ---
-def format_results(results_dict):
-    """Helper function to make results more readable."""
+
+
+def _format_results(results_dict):
+    """
+    Format results for display with appropriate units and precision.
+
+    Parameters:
+    -----------
+    results_dict : dict
+        Dictionary of raw calculation results
+
+    Returns:
+    --------
+    dict
+        Dictionary of formatted results for display
+    """
     formatted = {}
     for key, value in results_dict.items():
         if 'Youngs Modulus' in key or 'UTS' in key or 'Yield Strength' in key:
@@ -205,4 +248,129 @@ def format_results(results_dict):
         elif 'File' in key:
             # Shorten the file path for display
             formatted[key] = os.path.basename(value)
+        # Format quality metrics
+        elif key == 'R_squared':
+            formatted['R² Value'] = f"{value:.3f}" if pd.notna(value) else "N/A"
+        elif key == 'Modulus_ratio':
+            formatted['Modulus Ratio'] = f"{min(value, 10):.2f}" if pd.notna(value) else "N/A"
+        elif key == 'Early_region_score':
+            formatted['Early Region Score'] = f"{value:.2f}" if pd.notna(value) else "N/A"
+        elif key == 'Residual_score':
+            formatted['Residual Score'] = f"{value:.2f}" if pd.notna(value) else "N/A"
+        elif key == 'Data_points':
+            formatted['Data Points'] = f"{int(value)}" if pd.notna(value) else "N/A"
+        elif key == 'Data_coverage':
+            formatted['Data Coverage'] = f"{value:.2f}" if pd.notna(value) else "N/A"
+        elif key == 'Overall_quality_score':
+            formatted['Overall Quality Score'] = f"{value:.2f}" if pd.notna(value) else "N/A"
     return formatted
+
+
+def analyze_stress_strain(file_path, interactive=True, format_output=False):
+    """
+    Analyze stress-strain data from a CSV file and display results.
+
+    This is the main function of the module that provides a unified interface
+    for stress-strain analysis. It can work in both interactive and non-interactive modes.
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the CSV file containing stress-strain data
+    interactive : bool, default=True
+        If True, displays an interactive plot with sliders for adjusting the elastic region
+        If False, performs automatic analysis and returns the results
+    format_output : bool, default=False
+        If True, formats the results for display (only in non-interactive mode)
+
+    Returns:
+    --------
+    dict
+        Dictionary of analysis results (only in non-interactive mode)
+        If format_output=True, returns formatted results for display
+        In interactive mode, the function displays the plot and returns None
+    """
+    # Load data
+    df = pd.read_csv(file_path)
+
+    if not interactive:
+        # Non-interactive mode: perform analysis and return results
+        fig, ax = plt.subplots(figsize=(10, 7))
+        results = _analyze_stress_strain(df.copy(), ax)
+        plt.show()
+
+        # Format results if requested
+        if format_output:
+            return _format_results(results)
+        return results
+
+    # Interactive mode
+    max_strain = df[StrainCol].max()
+
+    # --- Run initial automatic analysis to get starting points ---
+    # We need a dummy figure/ax to call the function
+    _, dummy_ax = plt.subplots()
+    initial_results = _analyze_stress_strain(df.copy(), ax=dummy_ax)
+    plt.close(_) # Close the dummy plot to prevent it from displaying
+
+    initial_start_strain = df[StrainCol].iloc[1] # A safe default
+    initial_limit_strain = initial_results.get('Elastic Limit Strain', max_strain / 2)
+
+    # Get the *actual* start from the fit, not just the limit
+    if 'Model Type' in initial_results and initial_results['Model Type'] != "Manual Override":
+        elastic_region_data = df[(df[StrainCol] <= initial_limit_strain)]
+        if not elastic_region_data.empty:
+            # Find where the automatic fit started
+            my_pwlf = pwlf.PiecewiseLinFit(elastic_region_data[StrainCol], elastic_region_data[StressCol])
+            breaks = my_pwlf.fit(2)
+            if len(breaks) > 1:
+                initial_start_strain = breaks[0]
+
+    # --- Create the Interactive Widget ---
+    bounds_slider = widgets.FloatRangeSlider(
+        value=[initial_start_strain, initial_limit_strain],
+        min=0,
+        max=max_strain,
+        step=max_strain / 2000, # A reasonable step size
+        description='Elastic Region:',
+        disabled=False,
+        continuous_update=False, # Only update when mouse is released
+        orientation='horizontal',
+        readout=True,
+        readout_format='.4f',
+        layout=widgets.Layout(width='80%')
+    )
+
+    # --- Create the figure and output widget ---
+    plt.ioff()  # Turn off interactive mode to prevent automatic display
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # Create an output widget to capture the plot
+    output_widget = widgets.Output()
+
+    # Define update function that will refresh the plot when slider changes
+    def update_plot(change):
+        bounds = change.new if hasattr(change, 'new') else change
+
+        with output_widget:
+            # Clear previous output
+            clear_output(wait=True)
+
+            # Update the plot
+            _analyze_stress_strain(df.copy(), ax, elastic_bounds_override=bounds)
+
+            # Display the updated figure
+            display(fig)
+
+    # Connect the slider to our update function
+    bounds_slider.observe(update_plot, names='value')
+
+    # Initial update to ensure plot is displayed
+    update_plot(bounds_slider.value)
+
+    # Display the slider and the plot output
+    print("Adjust the slider to refine the linear elastic region. The plot and calculations will update.")
+    display(widgets.VBox([bounds_slider, output_widget]))
+
+    # Return None in interactive mode
+    return None
