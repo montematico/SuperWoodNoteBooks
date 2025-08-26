@@ -21,6 +21,70 @@ StrainCol = "Strain (m/m)"
 StressCol = "Stress (Pa)"
 OffsetStrain = 0.002
 
+
+class Analysis:
+    """
+    Class for performing stress-strain analysis on a given dataset.
+    """
+    def __init__(self,df,Ax = None):
+        """
+        Initialize the analysis object.
+        Params:
+        df : pandas.DataFrame
+            DataFrame containing stress-strain data
+        ax : matplotlib.axes.Axes, optional
+            Axes to plot on. If None, no plotting is done.
+        """
+        self.df = df[[StressCol,StrainCol]].copy() #creates a copy of the dataframe
+        self.df.rename(columns={StressCol:'Stress',StrainCol:'Strain'},inplace=True) #renames the columns
+        self.df.drop_duplicates(subset=["Strain"], keep='first',inplace=True) #drops duplicates
+
+        self.__Ax = Ax
+        self.__ElasticBound = [0.02,None] #contains upper and lower limit of elastic bounds
+
+        self.Yield = { "Stress": None,"Strain": None, "idx": None}
+        self.Yield = self.__findYield()
+        if self.__Ax is not None:
+            #Axes passed, assume plotting
+            self.__plot()
+
+
+
+    def __plot(self):
+        self.__Ax.plot(self.df["Strain"],self.df["Stress"]*1e-6,label="Experimental Data")
+        self.__Ax.set_xlabel("Strain")
+        self.__Ax.set_ylabel("Stress (MPa)")
+        self.__Ax.legend()
+        self.__Ax.grid(True)
+        return self.__Ax
+
+    def __findYield(self):
+        """
+        Finds the first point at which stress decreases, indicating the yielding point.
+        This is done via finding the first negative point in the local derivative
+
+        """
+        self.df["StressGradient"] = np.gradient(self.df["Stress"],self.df["Strain"]) #Calculates so called "Stress Rate"
+        try:
+            yieldIdx = self.df[self.df["StressGradient"]<0].index[0] #Finds the first negative point in the local derivative (i.e. first yielding)
+
+        except:
+            raise Exception("No yield point found")
+        else:
+            self.__ElasticBound[1] = yieldIdx
+            self.Yield["Stress"]= self.df.at[yieldIdx, "Stress"] #saves the yield stress
+            self.Yield["Strain"]= self.df.at[yieldIdx, "Strain"] #saves the yield strain
+            self.Yield["idx"]= yieldIdx #saves the index of the yield point
+            return self.Yield
+
+
+
+
+
+
+
+
+
 def _analyze_stress_strain(df, ax=None, elastic_bounds_override=None):
     """
     Analyzes stress-strain data and calculates material properties.
@@ -447,117 +511,4 @@ def analyze_stress_strain(file_path, interactive=True, format_output=False, save
         In interactive mode: Tuple of (results, selected_bounds) where selected_bounds can be saved
             for future use
     """
-    # Load data
-    df = pd.read_csv(file_path)
-    max_strain = df[StrainCol].max()
-
-    if not interactive:
-        # Non-interactive mode: use saved bounds if available
-        fig, ax = plt.subplots(figsize=(10, 7))
-        if saved_bounds:
-            results = _analyze_stress_strain(df.copy(), ax, elastic_bounds_override=saved_bounds)
-        else:
-            # Use default bounds if no saved bounds are available
-            default_start = df[StrainCol].iloc[1]  # A safe default for start
-            default_limit = max_strain / 3  # A reasonable default for limit
-            results = _analyze_stress_strain(df.copy(), ax, elastic_bounds_override=(default_start, default_limit))
-        plt.show()
-
-        # Format results if requested
-        if format_output:
-            return _format_results(results)
-        return results
-
-    # Interactive mode
-    # Set initial bounds from saved values or use defaults
-    if saved_bounds:
-        initial_start_strain, initial_limit_strain = saved_bounds
-    else:
-        initial_start_strain = df[StrainCol].iloc[1]  # A safe default
-        initial_limit_strain = max_strain / 3  # A reasonable default
-
-    # --- Create the Interactive Widget ---
-    bounds_slider = widgets.FloatRangeSlider(
-        value=[initial_start_strain, initial_limit_strain],
-        min=0,
-        max=max_strain,
-        step=max_strain / 2000, # A reasonable step size
-        description='Elastic Region:',
-        disabled=False,
-        continuous_update=False, # Only update when mouse is released
-        orientation='horizontal',
-        readout=True,
-        readout_format='.4f',
-        layout=widgets.Layout(width='80%')
-    )
-
-    # --- Create the figure and output widget ---
-    plt.ioff()  # Turn off interactive mode to prevent automatic display
-    fig, ax = plt.subplots(figsize=(10, 7))
-
-    # Create an output widget to capture the plot
-    output_widget = widgets.Output()
-
-    # Define update function that will refresh the plot when slider changes
-    def update_plot(change):
-        bounds = change.new if hasattr(change, 'new') else change
-
-        with output_widget:
-            # Clear previous output
-            clear_output(wait=True)
-
-            # Update the plot
-            _analyze_stress_strain(df.copy(), ax, elastic_bounds_override=bounds)
-
-            # Display the updated figure
-            display(fig)
-
-    # Connect the slider to our update function
-    bounds_slider.observe(update_plot, names='value')
-
-    # Initial update to ensure plot is displayed
-    update_plot(bounds_slider.value)
-
-    # Create a button to calculate and save results
-    calculate_button = widgets.Button(
-        description='Calculate Properties',
-        button_style='success',
-        tooltip='Calculate material properties using selected bounds',
-        icon='check'
-    )
-
-    # Create output area for results
-    results_output = widgets.Output()
-
-    # Variable to store the latest results and bounds
-    latest_results = [None]
-    latest_bounds = [bounds_slider.value]
-
-    def on_calculate_button_clicked(b):
-        with results_output:
-            clear_output(wait=True)
-            # Calculate results with current bounds
-            results = _analyze_stress_strain(df.copy(), ax, elastic_bounds_override=bounds_slider.value)
-            latest_results[0] = results
-            latest_bounds[0] = bounds_slider.value
-
-            # Display formatted results
-            formatted = _format_results(results)
-            result_df = pd.DataFrame.from_dict(formatted, orient="index", columns=["Value"])
-            display(result_df)
-
-            print("\nBounds saved for future use. Use these bounds in non-interactive mode with:")
-            print(f"saved_bounds=({bounds_slider.value[0]:.6f}, {bounds_slider.value[1]:.6f})")
-
-    calculate_button.on_click(on_calculate_button_clicked)
-
-    # Display the output widget first, then the slider and button
-    print("Adjust the slider to refine the linear elastic region. The plot will update.")
-    print("Click 'Calculate Properties' when you're satisfied with the bounds.")
-    display(widgets.VBox([output_widget, bounds_slider, calculate_button, results_output]))
-
-    # Return a function that can be called to get the latest results and bounds
-    def get_results_and_bounds():
-        return latest_results[0], latest_bounds[0]
-
-    return get_results_and_bounds
+    pass
