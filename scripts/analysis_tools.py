@@ -128,7 +128,9 @@ def _analyze_stress_strain(df, ax=None, elastic_bounds_override=None):
     try:
         # Start searching for the yield point from the offset strain.
         # The yield point can be beyond the elastic region bounds.
-        search_df = df[df[StrainCol] >= OffsetStrain].copy()
+        # search_df = df[df[StrainCol] >= OffsetStrain].copy()
+        # CORRECTED: Start searching for the yield point immediately after the elastic region ends.
+        search_df = df[df[StrainCol] >= elastic_limit].copy()
 
         # Calculate the difference between actual stress and offset line stress
         search_df['diff'] = search_df[StressCol] - search_df['Offset Stress']
@@ -161,10 +163,29 @@ def _analyze_stress_strain(df, ax=None, elastic_bounds_override=None):
 
             # If this is the first point and it's already positive, use it directly
             if first_cross_idx == search_df.index[0]:
-                intersection_index = first_cross_idx
-                yield_strength = df.loc[intersection_index, StressCol]
-                yield_strain = df.loc[intersection_index, StrainCol]
-                print(f"First point is already above offset line. Using as yield point.")
+                print(f"Yield point occurs at or before the elastic limit. Interpolating...")
+                # Find the index of the point in the *original dataframe* immediately before the search started
+                prev_idx_loc = df.index.get_loc(first_cross_idx) - 1
+                if prev_idx_loc >= 0:
+                    prev_idx = df.index[prev_idx_loc]
+
+                    # Get coordinates of the point before and the point at the elastic limit
+                    strain1, stress1 = df.loc[prev_idx, [StrainCol, StressCol]]
+                    offset1 = df.loc[prev_idx, 'Offset Stress']
+                    strain2, stress2 = df.loc[first_cross_idx, [StrainCol, StressCol]]
+                    offset2 = df.loc[first_cross_idx, 'Offset Stress']
+
+                    # Perform the same interpolation as the main case
+                    if strain2 != strain1:
+                        t = (offset1 - stress1) / ((stress2 - stress1) - (offset2 - offset1))
+                        yield_strain = strain1 + t * (strain2 - strain1)
+                        yield_strength = stress1 + t * (stress2 - stress1)
+                        intersection_index = first_cross_idx
+                else:
+                    # Fallback if there's no previous point (unlikely)
+                    intersection_index = first_cross_idx
+                    yield_strength = df.loc[intersection_index, StressCol]
+                    yield_strain = df.loc[intersection_index, StrainCol]
             else:
                 # Get the point before the crossing (below the line) and the point after (above the line)
                 # to interpolate the exact crossing point
@@ -189,7 +210,8 @@ def _analyze_stress_strain(df, ax=None, elastic_bounds_override=None):
 
                     # Interpolate the strain and stress at the crossing point
                     yield_strain = strain1 + t * (strain2 - strain1)
-                    yield_strength = youngs_modulus * yield_strain + offset_intercept
+                    yield_strength = stress1 + t * (stress2 - stress1)
+                    #yield_strength = youngs_modulus * yield_strain + offset_intercept
 
                     # Use the index of the point after crossing for reference
                     intersection_index = first_cross_idx
