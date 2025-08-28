@@ -1,0 +1,6 @@
+# In _config.yml
+title: SuperWood Testing Book
+author: Mika Prada Enzmann
+
+execute:
+  execute_notebooks: force

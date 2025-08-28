@@ -1,0 +1,109 @@
+Traceback (most recent call last):
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\jupyter_core\utils\__init__.py", line 154, in wrapped
+    asyncio.get_running_loop()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: no running event loop
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\jupyter_cache\executors\utils.py", line 58, in single_nb_execution
+    executenb(
+    ~~~~~~~~~^
+        nb,
+        ^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\nbclient\client.py", line 1319, in execute
+    return NotebookClient(nb=nb, resources=resources, km=km, **kwargs).execute()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\jupyter_core\utils\__init__.py", line 158, in wrapped
+    return loop.run_until_complete(inner)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\nbclient\client.py", line 709, in async_execute
+    await self.async_execute_cell(
+        cell, index, execution_count=self.code_cells_executed + 1
+    )
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\nbclient\client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "C:\Users\monte\anaconda3\envs\SuperWood\Lib\site-packages\nbclient\client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+from scripts.analysis_tools import Analysis
+
+
+# Configure matplotlib to use a standard font
+import matplotlib as mpl
+mpl.rcParams['font.family'] = 'sans-serif'
+mpl.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Helvetica', 'sans-serif']
+
+
+def find_project_root(marker_file='.project_root'):
+    """
+    Searches upwards from the current directory to find the project root,
+    identified by the presence of a marker file.
+    """
+    current_path = os.getcwd()  # Start from the notebook's directory
+    while True:
+        if os.path.exists(os.path.join(current_path, marker_file)):
+            return current_path  # Found the root
+        parent_path = os.path.dirname(current_path)
+        if parent_path == current_path:
+            # Reached the filesystem root, marker not found
+            raise FileNotFoundError(f"Project root marker '{marker_file}' not found.")
+        current_path = parent_path
+
+# Find the root and construct the path
+try:
+    project_root = find_project_root()
+    File = "Superwood-ID26s-07302025.csv"
+    # This path is now ALWAYS correct, regardless of where the notebook is.
+    File_Path = os.path.join(project_root, 'data', 'InventWood', File)
+
+    print(f" Project Root Found: {project_root}")
+    print(f"   Loading File: {File_Path}")
+except FileNotFoundError as e:
+    print(f" Error: {e}")
+    # Stop execution or handle the error appropriately
+    # For example: df = None
+
+
+## Pre-Processing ##
+df = pd.read_csv(File_Path)
+
+## Advanced Plotting w/ Auto Yield
+fig, Tax = plt.subplots()
+sample = Analysis(df,File[:-4],Ax = Tax)
+plt.show()
+sample.returnMatProperties()
+------------------
+
+----- stdout -----
+ Error: Project root marker '.project_root' not found.
+------------------
+
+[31m---------------------------------------------------------------------------[39m
+[31mNameError[39m                                 Traceback (most recent call last)
+[36mCell[39m[36m [39m[32mIn[1][39m[32m, line 44[39m
+[32m     38[39m     [38;5;28mprint[39m([33mf[39m[33m"[39m[33m Error: [39m[38;5;132;01m{[39;00me[38;5;132;01m}[39;00m[33m"[39m)
+[32m     39[39m     [38;5;66;03m# Stop execution or handle the error appropriately[39;00m
+[32m     40[39m     [38;5;66;03m# For example: df = None[39;00m
+[32m     41[39m 
+[32m     42[39m 
+[32m     43[39m [38;5;66;03m## Pre-Processing ##[39;00m
+[32m---> [39m[32m44[39m df = pd.read_csv(File_Path)
+[32m     46[39m [38;5;66;03m## Advanced Plotting w/ Auto Yield[39;00m
+[32m     47[39m fig, Tax = plt.subplots()
+
+[31mNameError[39m: name 'File_Path' is not defined
+
