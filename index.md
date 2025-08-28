@@ -1,0 +1,2 @@
+- Only short samples have been processed so far
+- Test 22S, 23S do not have videos -- blame Mika

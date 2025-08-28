@@ -29,7 +29,7 @@ class Analysis:
     __rThreshhold = 0.96 #Lower limit of residuals to be considered "good"
     __stressScale = 1e-6 #Conversion factor to use on plotting Pa -> MPa
 
-    def __init__(self,df,name="",Ax = None):
+    def __init__(self,df,name="",Ax = None,boundOverRide=(None, None)):
         """
         Initialize the analysis object.
         Params:
@@ -53,6 +53,7 @@ class Analysis:
         else:
             self.__Name = name
 
+        self.boundOverRide = boundOverRide
         self.__Ax = Ax
         self.__ElasticBound = [None,None] #contains upper and lower limit of elastic bounds
 
@@ -111,28 +112,62 @@ class Analysis:
         self.__Ax.plot(Youngs["X"],Youngs["Y"]*self.__stressScale,color="red",linestyle="-.",label=f"Lin Elastic: Y = {(self.LinElastic["Slope"]*self.__stressScale):.1f} MPa")
         return self.__Ax
 
-
     def __findElastic(self):
-        #Finds the Upper and Lower bounds of the linear elastic region
-        UpperIdx = self.__findYield() #Finds the Upper bound based on the first decrease in stress
-        #Finds the lower bounds using PWLF
-        self.__findLowerElastic(UpperIdx)
+        """
+        Determines the linear elastic region bounds.
+        Uses a manual override if provided, otherwise runs automatic detection.
+        """
+        # Check if a manual override for the bounds has been provided
+        lower_override, upper_override = self.boundOverRide
+        if lower_override is not None and upper_override is not None:
+            print("Manual elastic bounds override activated.")
 
-        #Checks residuals to ensure they are above __rThreshhold
-        #todo add r^2 check here to ensure it is beyond some threshhold value
+            # --- Find the INDEX closest to the desired STRAIN bounds ---
+
+            # Find the dataframe index label for the closest strain value
+            lower_label_idx = (self.df['Strain'] - lower_override).abs().idxmin()
+            upper_label_idx = (self.df['Strain'] - upper_override).abs().idxmin()
+
+            # Get the integer position (.iloc) for slicing
+            lower_iloc_idx = self.df.index.get_loc(lower_label_idx)
+            upper_iloc_idx = self.df.index.get_loc(upper_label_idx)
+
+            self.__ElasticBound = [lower_iloc_idx, upper_iloc_idx]
+
+            # --- IMPORTANT: Update the Yield point to match the new upper bound ---
+            self.Yield["Stress"] = self.df.loc[upper_label_idx, "Stress"]
+            self.Yield["Strain"] = self.df.loc[upper_label_idx, "Strain"]
+            self.Yield["idx"] = upper_label_idx
+
+        else:
+            # If no override, run the automatic detection methods
+            UpperIdx = self.__findYield()
+            self.__findLowerElastic(UpperIdx)
+
+        # --- Perform Linear Regression on the determined elastic region ---
+        # This part runs for both manual and automatic modes
         elastic_df = self.df.iloc[self.__ElasticBound[0]:self.__ElasticBound[1]]
-        LinReg = stats.linregress(elastic_df["Strain"], elastic_df["Stress"])
 
-        if LinReg.rvalue**2 < self.__rThreshhold:
-            warnings.warn("Residuals are below threshold. Check data.")
+        # Add a check to prevent crashing if the slice is too small
+        if len(elastic_df) < 2:
+            warnings.warn("Elastic region contains less than 2 data points. Cannot perform linear regression.")
+            # Set dummy values to avoid downstream errors
+            LinReg = lambda: None;
+            LinReg.slope = 0;
+            LinReg.intercept = 0;
+            LinReg.rvalue = 0
+        else:
+            LinReg = stats.linregress(elastic_df["Strain"], elastic_df["Stress"])
 
-        #Will still create object even with poor fitting. Caution
+        if LinReg.rvalue ** 2 < self.__rThreshhold:
+            warnings.warn(f"R-squared value ({LinReg.rvalue ** 2:.3f}) is below the threshold of {self.__rThreshhold}.")
+
         self.LinElastic = {
             "Slope": LinReg.slope,
             "Intercept": LinReg.intercept,
-            "R2": LinReg.rvalue**2,
-            "UpperBound": self.__ElasticBound[0],
-            "LowerBound": self.__ElasticBound[1]
+            "R2": LinReg.rvalue ** 2,
+            "UpperBound": self.__ElasticBound[1],  # Note: this is an iloc index
+            "LowerBound": self.__ElasticBound[0]  # Note: this is an iloc index
         }
 
     def __findLowerElastic(self,Upper):
