@@ -60,18 +60,33 @@ class Analysis:
         self.Yield = { "Stress": None,"Strain": None, "idx": None}
         self.__findElastic()
 
+
+        #Material Properties Dictionary
+        self.Properties = pd.DataFrame.from_dict(
+            {
+                "YoungsModulus (MPa)": self.LinElastic["Slope"]*self.__stressScale,
+                "YieldStress (MPa)": self.Yield["Stress"]*self.__stressScale,
+                "YieldStrain (%)": self.Yield["Strain"]*100,
+                "UltimateStress (MPa)": self.df["Stress"].max()*self.__stressScale,
+                "UltimateStrain (%)": self.df.loc[self.df["Stress"].idxmax(),"Strain"]*100
+            },
+            orient="index",
+            columns=["Value"]
+        )
+
+        pd.DataFrame()
+        #Ultimate Strength is easier to calculate hence it is done in __init__
+        self.Ultimate={
+            "Stress":self.df["Stress"].max(),
+            "idx":self.df["Stress"].idxmax(),
+            "Strain":self.df.loc[self.df["Stress"].idxmax(),"Strain"]
+        }
         if self.__Ax is not None:
             #Axes passed, assume plotting
             self.__plot()
         else:
             warnings.warn("No Axes provided. Plotting disabled.")
 
-        #Material Properties Dictionary
-        self.Properties = {
-            "YoungsModulus": None,
-            "YieldStrength": None,
-            "UltimateStrength": None,
-        }
 
 
     def __plot(self):
@@ -83,7 +98,7 @@ class Analysis:
         self.__Ax.grid(True)
         self.__DrawLinearElastic()
         self.__Ax.scatter(self.Yield["Strain"],self.Yield["Stress"]*self.__stressScale,color="red",s=150,label=f"Yield Point: {(self.Yield["Stress"]*self.__stressScale):.1f} MPa")
-
+        self.__Ax.scatter(self.Ultimate["Strain"],self.Ultimate["Stress"]*self.__stressScale,color="green",s=150,label=f"Ultimate Strength: {(self.Ultimate['Stress']*self.__stressScale):.1f} MPa")
         self.__Ax.legend()
         return self.__Ax
 
@@ -120,10 +135,6 @@ class Analysis:
             "LowerBound": self.__ElasticBound[1]
         }
 
-
-
-
-
     def __findLowerElastic(self,Upper):
         CroppedData = self.df.iloc[0:Upper].copy()
         my_pwlf = pwlf.PiecewiseLinFit(CroppedData["Strain"],CroppedData["Stress"])
@@ -152,6 +163,9 @@ class Analysis:
             self.Yield["idx"]= yieldIdx #saves the index of the yield point
             return yieldIdx #used by __findElastic to find the lower bounds
 
+    def returnMatProperties(self, decimals = 2):
+        #Returns dataframe of calculated material properties
+        return self.Properties.round(decimals)
 
 
 
